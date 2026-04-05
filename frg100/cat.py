@@ -126,7 +126,8 @@ class CATConnection:
         self._serial.flush()
 
     def send_command_read(self, opcode: int, args: list[int] = None,
-                          expected_bytes: int = 5) -> bytes:
+                          expected_bytes: int = 5,
+                          read_timeout: float = None) -> bytes:
         """
         Envoie une commande et lit la réponse du FRG-100.
 
@@ -137,16 +138,27 @@ class CATConnection:
             opcode         : identifiant de la commande
             args           : paramètres (optionnel)
             expected_bytes : nombre d'octets attendus en réponse (5 par défaut)
+            read_timeout   : timeout de lecture en secondes (None = utilise self.TIMEOUT)
 
         Returns:
             bytes lus depuis le FRG-100
         """
         self.send_command(opcode, args)
 
-        # Petite pause recommandée par le manuel (PACING)
-        time.sleep(0.05)
+        # Délai d'attente avant lecture — le FRG-100 peut être lent à répondre
+        # Le manuel mentionne que la réponse peut être retardée par le PACING
+        time.sleep(0.15)
+
+        # Timeout de lecture personnalisable
+        old_timeout = self._serial.timeout
+        if read_timeout is not None:
+            self._serial.timeout = read_timeout
 
         response = self._serial.read(expected_bytes)
+
+        if read_timeout is not None:
+            self._serial.timeout = old_timeout
+
         if len(response) < expected_bytes:
             logger.warning(
                 f"Réponse incomplète : {len(response)}/{expected_bytes} octets reçus"

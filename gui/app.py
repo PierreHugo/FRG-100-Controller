@@ -459,9 +459,16 @@ class FRG100App(tk.Tk):
         MAX_FAILURES = 3
         while self._polling and self.connected:
             try:
-                value = read_smeter(self.cat)
-                failures = 0
-                self.after(0, self._draw_smeter, min(value, 12))
+                # Timeout étendu à 3s pour le S-mètre — la réponse peut être lente
+                response = self.cat.send_command_read(
+                    0xF7, expected_bytes=5, read_timeout=3.0
+                )
+                if len(response) == 5:
+                    failures = 0
+                    value = response[0]
+                    self.after(0, self._draw_smeter, min(value, 12))
+                else:
+                    raise CATError("réponse incomplète")
             except CATError:
                 failures += 1
                 if failures >= MAX_FAILURES:

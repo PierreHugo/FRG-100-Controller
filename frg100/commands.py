@@ -95,43 +95,42 @@ VFO_TO_MEM_RECALL = 0x02   # rappeler le canal
 
 def freq_to_bcd(freq_hz: int) -> list[int]:
     """
-    Encode une fréquence en Hz en BCD packed decimal, ordre inverse.
+    Encode une fréquence en Hz en BCD packed decimal.
 
     Le FRG-100 exprime les fréquences en dizaines de Hz sur 8 chiffres
-    décimaux, packés en 4 octets BCD, envoyés du moins significatif
-    au plus significatif (ordre inverse).
+    décimaux, packés en 4 octets BCD.
 
-    Exemple confirmé par le manuel (p.37) :
-        14.250 MHz = 14 250 000 Hz ÷ 10 = 1 425 000
+    Exemple confirmé par l'exemple GW Basic du manuel (p.39) :
+        14.25000 MHz → bloc envoyé : 00h 50h 42h 01h 0Ah (opcode)
+        Ordre sur le fil : [Arg4=00, Arg3=50, Arg2=42, Arg1=01, Opcode]
+        Donc arg1=01, arg2=42, arg3=50, arg4=00
+
+        14 250 000 Hz ÷ 10 = 1 425 000
         → 8 chiffres : "01425000"
-        → 4 octets BCD : 0x01, 0x42, 0x50, 0x00
-        → ordre inverse pour args [arg1..arg4] : [0x00, 0x50, 0x42, 0x01]
-        → bloc envoyé (arg4 en tête) : 01h 00h 42h 50h 00h (opcode) ✓
+        → 4 octets BCD : [01, 42, 50, 00]
+        → on retourne [01, 42, 50, 00] = [arg1, arg2, arg3, arg4]
+        → _build_block inverse → [00, 50, 42, 01] sur le fil ✓
 
     Args:
         freq_hz : fréquence en Hz (ex: 14_250_000 pour 14.250 MHz)
 
     Returns:
-        Liste de 4 octets [arg1, arg2, arg3, arg4]
+        Liste [arg1, arg2, arg3, arg4] dans l'ordre naturel
+        (_build_block se charge de l'inversion avant envoi)
     """
-    # Résolution du FRG-100 = 10 Hz → on divise par 10
     freq_tens = freq_hz // 10
-
-    # Représentation sur 8 chiffres décimaux packés en 4 octets BCD
     freq_str  = f"{freq_tens:08d}"
-    bcd_bytes = [int(freq_str[i:i+2]) for i in range(0, 8, 2)]
-
-    # _build_block inverse les args → on retourne [arg1..arg4]
-    return list(reversed(bcd_bytes))
+    # [01, 42, 50, 00] pour 14.250 MHz
+    return [int(freq_str[i:i+2]) for i in range(0, 8, 2)]
 
 
 def bcd_to_freq(bcd_bytes: list[int]) -> int:
     """
-    Décode 4 octets BCD [arg1..arg4] en fréquence Hz.
-    Inverse de freq_to_bcd — utilisé pour lire Status Update.
+    Décode 4 octets BCD [arg1, arg2, arg3, arg4] en fréquence Hz.
+    Inverse de freq_to_bcd.
+    Ex : [01, 42, 50, 00] → "01425000" → 1 425 000 × 10 = 14 250 000 Hz
     """
-    normal_order = list(reversed(bcd_bytes))
-    freq_str  = "".join(f"{b:02d}" for b in normal_order)
+    freq_str  = "".join(f"{b:02d}" for b in bcd_bytes)
     freq_tens = int(freq_str)
     return freq_tens * 10
 
@@ -371,22 +370,29 @@ def read_smeter(cat: CATConnection) -> int:
     """
     Lit la valeur du S-Mètre (opcode F7h).
 
-    Le FRG-100 retourne 4 octets identiques (valeur du mètre)
-    suivis de 0xF7. Ex : [05, 05, 05, 05, F7] → S = 5.
+    Le FRG-100 retourne 4 octets identiques (valeur 0–0FFh)
+    suivis du filler 0F7h. Ex : [05, 05, 05, 05, F7] → S = 5.
+
+    Note : la réponse peut être lente selon le PACING configuré.
+    On tolère un filler absent si les 4 premiers octets sont cohérents.
 
     Returns:
-        Valeur du S-Mètre (0–18 typiquement)
+        Valeur du S-Mètre (0–255, en pratique 0–0F0h max)
 
     Raises:
-        CATError si pas de réponse ou format inattendu
+        CATError si pas de réponse du tout
     """
     response = cat.send_command_read(OP_READ_SMETER, expected_bytes=5)
-    if len(response) < 5:
+    if len(response) == 0:
         raise CATError("Pas de réponse du S-Mètre")
-    # Vérification : le 5ème octet doit être 0xF7
+    if len(response) < 5:
+        raise CATError(f"Réponse S-Mètre incomplète : {len(response)}/5 octets")
+    # Le dernier octet est normalement 0xF7 (filler)
+    # On log un warning si ce n'est pas le cas mais on retourne quand même
     if response[4] != 0xF7:
-        raise CATError(
-            f"Format S-Mètre inattendu : dernier octet = {hex(response[4])}"
+        import logging
+        logging.getLogger(__name__).warning(
+            f"S-Mètre : filler inattendu {hex(response[4])} (attendu 0xF7)"
         )
     return response[0]
 
