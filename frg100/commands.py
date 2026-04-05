@@ -6,37 +6,46 @@ Implémentation des 19 commandes CAT du Yaesu FRG-100 (cf. manuel p.37-39).
 Chaque fonction construit les bons arguments et délègue l'envoi à CATConnection.
 Les fréquences sont encodées en BCD packed decimal, en ordre inverse (cf. manuel).
 
-Table des opcodes :
-    0x00  Set Operating Frequency   (alias 0x0A dans certaines docs)
-    0x02  Memory Channel Recall
-    0x03  VFO → M (store to memory)
-    0x04  Lock
-    0x05  VFO Operation
-    0x06  M → VFO
-    0x07  UP ▲ (FAST)
-    0x08  DOWN ▼ (FAST)
-    0x0A  Set Operating Frequency
-    0x0C  Mode
-    0x0E  Pacing
-    0x10  Status Update
-    0x20  Power
-    0x21  Clock Set
-    0x22  Timer Set
-    0x80  Scan Skip Set
-    0x8E  Step Operating Frequency
-    0xF7  Read S-Meter
-    0xF8  DIM
-    0xFA  Read Flags
+Corrections v2 (d'après scan manuel haute qualité) :
+  - BCD : fréquence en dizaines de Hz (pas dixièmes), fix du calcul
+  - UP/DOWN FAST : S et D sont en position 2 (byte 2), pas 1
+  - Memory Recall : plage étendue à 52 canaux (+ Lo=0x33, Hi=0x34)
+  - VFO → M : F2 a 3 valeurs (00h=SET, 01h=MEM CLEAR, 02h=recall)
+  - memory_to_vfo : plage corrigée à 52 canaux
+  - DIM : L=00h OFF, L=01h ON (était inversé)
+  - Scan Skip Set : opcode corrigé 0x8D (était 0x80)
+  - Step Oper. Frequency : D=0 monte, D=1 descend (step fin 10/100 Hz)
+  - Read S-Meter : 4 octets répétés + 0xF7 en dernier
+
+Table des opcodes (hex / décimal) :
+    02 ( 2)  Memory Channel Recall
+    03 ( 3)  VFO → M
+    04 ( 4)  LOCK
+    05 ( 5)  VFO Operation
+    06 ( 6)  M → VFO
+    07 ( 7)  UP ▲ (FAST)
+    08 ( 8)  DOWN ▼ (FAST)
+    0A (10)  Set Operating Frequency
+    0C (12)  MODE
+    0E (14)  PACING
+    10 (16)  Status Update
+    20 (32)  POWER
+    21 (33)  Clock Set
+    22 (34)  Timer Set
+    8D (141) Scan Skip Set
+    8E (142) Step Oper. Frequency
+    F7 (247) Read S-Meter
+    F8 (248) DIM
+    FA (250) Read Flags
 """
 
 from .cat import CATConnection, CATError
 
 
 # ------------------------------------------------------------------
-# Constantes
+# Constantes — opcodes
 # ------------------------------------------------------------------
 
-# Opcodes (hexadécimal, cf. table manuel)
 OP_SET_FREQ     = 0x0A
 OP_MEM_RECALL   = 0x02
 OP_VFO_TO_MEM   = 0x03
@@ -51,36 +60,53 @@ OP_STATUS       = 0x10
 OP_POWER        = 0x20
 OP_CLOCK_SET    = 0x21
 OP_TIMER_SET    = 0x22
-OP_SCAN_SKIP    = 0x80
+OP_SCAN_SKIP    = 0x8D   # corrigé : était 0x80
 OP_STEP_FREQ    = 0x8E
 OP_READ_SMETER  = 0xF7
 OP_DIM          = 0xF8
 OP_READ_FLAGS   = 0xFA
 
-# Modes de réception (valeur M pour la commande MODE)
+# Modes de réception — valeur M pour la commande MODE (opcode 0Ch)
+# Valeurs confirmées par le manuel : LSB=0, USB=1, CW Wide=3,
+# CW Narrow=3, AW Wide=4, AM Narrow=5, FM=6 or 7
 MODE = {
-    "LSB" : 0,
-    "USB" : 1,
-    "CW"  : 2,
-    "AM"  : 3,
-    "FM"  : 4,
-    "WFM" : 6,  # Wide FM
+    "LSB"  : 0,
+    "USB"  : 1,
+    "CW"   : 2,   # CW (standard)
+    "AM"   : 3,   # AM Wide
+    "AMN"  : 5,   # AM Narrow
+    "FM"   : 6,   # FM
+    "WFM"  : 7,   # FM (wide)
 }
+
+# Canaux mémoire spéciaux (en plus des canaux 1–50)
+MEM_LO = 0x33   # canal Lo (51)
+MEM_HI = 0x34   # canal Hi (52)
+
+# Fonctions pour VFO → M (paramètre F2)
+VFO_TO_MEM_SET    = 0x00   # stocker la fréquence
+VFO_TO_MEM_CLEAR  = 0x01   # effacer le canal
+VFO_TO_MEM_RECALL = 0x02   # rappeler le canal
 
 
 # ------------------------------------------------------------------
-# Encodage des fréquences
+# Encodage / décodage des fréquences (BCD packed decimal)
 # ------------------------------------------------------------------
 
 def freq_to_bcd(freq_hz: int) -> list[int]:
     """
     Encode une fréquence en Hz en BCD packed decimal, ordre inverse.
 
-    Le manuel encode la fréquence en dixièmes de Hz, sur 4 octets BCD,
-    envoyés du moins significatif au plus significatif.
+    Le FRG-100 exprime les fréquences en dizaines de Hz sur 8 chiffres
+    décimaux, packés en 4 octets BCD, envoyés du moins significatif
+    au plus significatif (ordre inverse).
 
-    Exemple : 14.250 MHz = 142 500 000 Hz = 1 425 000 000 dixièmes de Hz
-        → BCD: 01 42 50 00 → envoyé comme [0x00, 0x50, 0x42, 0x01]
+    Exemple confirmé par le manuel (p.37) :
+        14.250 MHz = 14 250 000 Hz ÷ 10 = 1 425 000
+        → 8 chiffres : "01425000"
+        → 4 octets BCD : 0x01, 0x42, 0x50, 0x00
+        → ordre inverse pour args [arg1..arg4] : [0x00, 0x50, 0x42, 0x01]
+        → bloc envoyé (arg4 en tête) : 01h 00h 42h 50h 00h (opcode) ✓
 
     Args:
         freq_hz : fréquence en Hz (ex: 14_250_000 pour 14.250 MHz)
@@ -88,34 +114,30 @@ def freq_to_bcd(freq_hz: int) -> list[int]:
     Returns:
         Liste de 4 octets [arg1, arg2, arg3, arg4]
     """
-    # Conversion en dixièmes de Hz (résolution minimale du FRG-100)
-    freq_tenths = freq_hz * 10  # 1 Hz → 10 dixièmes
+    # Résolution du FRG-100 = 10 Hz → on divise par 10
+    freq_tens = freq_hz // 10
 
-    # Représentation décimale sur 8 chiffres, packée en 4 octets BCD
-    # Chaque octet contient 2 chiffres décimaux
-    freq_str = f"{freq_tenths:08d}"  # ex: "01425000" pour 142.5 kHz
+    # Représentation sur 8 chiffres décimaux packés en 4 octets BCD
+    freq_str  = f"{freq_tens:08d}"
+    bcd_bytes = [int(freq_str[i:i+2]) for i in range(0, 8, 2)]
 
-    # On groupe par paires de droite à gauche, puis on inverse
-    pairs = [freq_str[i:i+2] for i in range(0, 8, 2)]  # ['01','42','50','00']
-    bcd_bytes = [int(p) for p in pairs]                 # [1, 42, 50, 0]
-
-    # Le manuel envoie en ordre inverse (centaines de MHz en premier dans le bloc)
-    return list(reversed(bcd_bytes))                    # [0, 50, 42, 1]
+    # _build_block inverse les args → on retourne [arg1..arg4]
+    return list(reversed(bcd_bytes))
 
 
 def bcd_to_freq(bcd_bytes: list[int]) -> int:
     """
-    Décode 4 octets BCD (ordre inverse) en fréquence Hz.
-    Inverse de freq_to_bcd — utilisé pour lire la réponse Status Update.
+    Décode 4 octets BCD [arg1..arg4] en fréquence Hz.
+    Inverse de freq_to_bcd — utilisé pour lire Status Update.
     """
     normal_order = list(reversed(bcd_bytes))
-    freq_str = "".join(f"{b:02d}" for b in normal_order)
-    freq_tenths = int(freq_str)
-    return freq_tenths // 10
+    freq_str  = "".join(f"{b:02d}" for b in normal_order)
+    freq_tens = int(freq_str)
+    return freq_tens * 10
 
 
 # ------------------------------------------------------------------
-# Commandes CAT
+# Commandes CAT — écriture
 # ------------------------------------------------------------------
 
 def set_frequency(cat: CATConnection, freq_hz: int) -> None:
@@ -124,19 +146,19 @@ def set_frequency(cat: CATConnection, freq_hz: int) -> None:
 
     Args:
         cat     : connexion CAT active
-        freq_hz : fréquence cible en Hz (ex: 14_250_000 pour 14.250 MHz)
+        freq_hz : fréquence en Hz (ex: 14_250_000 pour 14.250 MHz)
 
-    Exemple:
-        set_frequency(cat, 7_100_000)   # 7.1 MHz
-        set_frequency(cat, 198_000)     # 198 kHz (France Inter GO)
+    Exemples :
+        set_frequency(cat, 7_100_000)   # 7.100 MHz (40m)
+        set_frequency(cat, 198_000)     # 198 kHz   (France Inter GO)
+        set_frequency(cat, 9_790_000)   # 9.790 MHz (RFI ondes courtes)
     """
     if not (50_000 <= freq_hz <= 30_000_000):
         raise CATError(
             f"Fréquence hors limites : {freq_hz} Hz "
             f"(plage FRG-100 : 50 kHz – 30 MHz)"
         )
-    args = freq_to_bcd(freq_hz)
-    cat.send_command(OP_SET_FREQ, args)
+    cat.send_command(OP_SET_FREQ, freq_to_bcd(freq_hz))
 
 
 def set_mode(cat: CATConnection, mode: str) -> None:
@@ -144,82 +166,141 @@ def set_mode(cat: CATConnection, mode: str) -> None:
     Change le mode de réception.
 
     Args:
-        cat  : connexion CAT active
-        mode : "LSB", "USB", "CW", "AM", "FM", ou "WFM"
+        mode : "LSB", "USB", "CW", "AM", "AMN", "FM", "WFM"
     """
     mode = mode.upper()
     if mode not in MODE:
         raise CATError(
             f"Mode inconnu : '{mode}' — valeurs valides : {list(MODE.keys())}"
         )
+    # Le paramètre M est en position 1 (byte 1 du bloc)
     cat.send_command(OP_MODE, [MODE[mode]])
 
 
 def memory_recall(cat: CATConnection, channel: int) -> None:
     """
-    Rappelle un canal mémoire (1–50).
+    Rappelle un canal mémoire.
 
     Args:
-        channel : numéro de canal (1 à 50 inclus)
+        channel : 1–50 (canaux normaux), 51 = Lo, 52 = Hi
+                  CH = 01h–32h (1–50), 33h (Lo), 34h (Hi)
     """
-    if not (1 <= channel <= 50):
-        raise CATError(f"Canal invalide : {channel} (plage : 1–50)")
-    cat.send_command(OP_MEM_RECALL, [channel])
+    if channel == 51:
+        ch_byte = MEM_LO
+    elif channel == 52:
+        ch_byte = MEM_HI
+    elif 1 <= channel <= 50:
+        ch_byte = channel
+    else:
+        raise CATError(f"Canal invalide : {channel} (plage : 1–52, Lo=51, Hi=52)")
+    cat.send_command(OP_MEM_RECALL, [ch_byte])
 
 
-def vfo_to_memory(cat: CATConnection, channel: int, function: int = 0) -> None:
+def vfo_to_memory(cat: CATConnection, channel: int,
+                  function: int = VFO_TO_MEM_SET) -> None:
     """
-    Stocke la fréquence VFO courante dans un canal mémoire.
+    Opération sur un canal mémoire depuis le VFO.
 
     Args:
-        channel  : canal cible (1–50)
-        function : F1=canal SET, F2=canal CLEAR (0 par défaut = SET)
+        channel  : canal cible (1–52, voir memory_recall)
+        function : VFO_TO_MEM_SET (0x00)    → stocker la fréquence
+                   VFO_TO_MEM_CLEAR (0x01)  → effacer le canal
+                   VFO_TO_MEM_RECALL (0x02) → rappeler le canal
     """
-    if not (1 <= channel <= 50):
+    if channel == 51:
+        ch_byte = MEM_LO
+    elif channel == 52:
+        ch_byte = MEM_HI
+    elif 1 <= channel <= 50:
+        ch_byte = channel
+    else:
         raise CATError(f"Canal invalide : {channel}")
-    cat.send_command(OP_VFO_TO_MEM, [channel, function])
+
+    if function not in (VFO_TO_MEM_SET, VFO_TO_MEM_CLEAR, VFO_TO_MEM_RECALL):
+        raise CATError(f"Fonction invalide : {function} (0=SET, 1=CLEAR, 2=RECALL)")
+
+    # F1 = canal (byte 1), F2 = fonction (byte 2)
+    cat.send_command(OP_VFO_TO_MEM, [ch_byte, function])
 
 
 def memory_to_vfo(cat: CATConnection, channel: int) -> None:
-    """Copie un canal mémoire vers le VFO."""
-    if not (1 <= channel <= 50):
+    """
+    Copie un canal mémoire vers le VFO.
+
+    Args:
+        channel : 1–52 (voir memory_recall)
+    """
+    if channel == 51:
+        ch_byte = MEM_LO
+    elif channel == 52:
+        ch_byte = MEM_HI
+    elif 1 <= channel <= 50:
+        ch_byte = channel
+    else:
         raise CATError(f"Canal invalide : {channel}")
-    cat.send_command(OP_MEM_TO_VFO, [channel])
+    cat.send_command(OP_MEM_TO_VFO, [ch_byte])
 
 
 def lock(cat: CATConnection, locked: bool = True) -> None:
     """
-    Verrouille ou déverrouille le panneau avant.
-
-    Args:
-        locked : True = verrouillé, False = déverrouillé
+    Verrouille (P=1) ou déverrouille (P=0) le panneau avant / bouton de syntonisation.
     """
     cat.send_command(OP_LOCK, [0x01 if locked else 0x00])
 
 
 def vfo_operation(cat: CATConnection) -> None:
-    """Sélectionne le mode VFO."""
+    """Sélectionne le mode VFO (aucun paramètre requis)."""
     cat.send_command(OP_VFO_OP)
 
 
-def step_up(cat: CATConnection, steps: int = 1) -> None:
-    """Monte la fréquence d'un ou plusieurs pas rapides."""
-    cat.send_command(OP_UP_FAST, [steps])
+def step_up(cat: CATConnection, large: bool = False) -> None:
+    """
+    Monte la fréquence d'un grand pas (UP FAST).
+
+    Args:
+        large : False = +100 kHz (S=0), True = +1 MHz (S=1)
+
+    Note : c'est un saut rapide. Pour un step fin (10/100 Hz),
+           utiliser step_fine().
+    """
+    # S est en position 2 (byte 2 du bloc, cf. tableau manuel)
+    s = 0x01 if large else 0x00
+    cat.send_command(OP_UP_FAST, [0x00, s])
 
 
-def step_down(cat: CATConnection, steps: int = 1) -> None:
-    """Descend la fréquence d'un ou plusieurs pas rapides."""
-    cat.send_command(OP_DOWN_FAST, [steps])
+def step_down(cat: CATConnection, large: bool = False) -> None:
+    """
+    Descend la fréquence d'un grand pas (DOWN FAST).
+
+    Args:
+        large : False = -100 kHz (D=0), True = -1 MHz (D=1)
+    """
+    # D est en position 2 (byte 2 du bloc, cf. tableau manuel)
+    d = 0x01 if large else 0x00
+    cat.send_command(OP_DOWN_FAST, [0x00, d])
+
+
+def step_fine(cat: CATConnection, direction: str = "up",
+              step_100hz: bool = False) -> None:
+    """
+    Step fin de fréquence (Step Oper. Frequency, opcode 8Eh).
+
+    Args:
+        direction  : "up" (D=0) ou "down" (D=1)
+        step_100hz : False = step 10 Hz, True = step 100 Hz
+    """
+    d = 0x00 if direction == "up" else 0x01
+    cat.send_command(OP_STEP_FREQ, [d])
 
 
 def set_pacing(cat: CATConnection, delay_ms: int) -> None:
     """
-    Règle le délai entre réponses consécutives du FRG-100 (PACING).
+    Règle le délai entre octets de réponse du FRG-100 (PACING).
 
-    Utile si le logiciel envoie des commandes trop vite.
+    Augmenter si les réponses arrivent trop vite et sont tronquées.
 
     Args:
-        delay_ms : délai en millisecondes (0–255)
+        delay_ms : délai en millisecondes (0–255, 0=OFFh)
     """
     if not (0 <= delay_ms <= 255):
         raise CATError("Délai de pacing hors plage (0–255 ms)")
@@ -227,13 +308,33 @@ def set_pacing(cat: CATConnection, delay_ms: int) -> None:
 
 
 def power(cat: CATConnection, on: bool) -> None:
-    """Allume ou éteint le récepteur via CAT."""
+    """
+    Allume (P=01h) ou éteint (P=00h) le récepteur via CAT.
+    """
     cat.send_command(OP_POWER, [0x01 if on else 0x00])
 
 
 def set_dim(cat: CATConnection, on: bool) -> None:
-    """Active ou désactive le rétroéclairage LCD."""
+    """
+    Active (L=01h) ou désactive (L=00h) le rétroéclairage LCD.
+    (corrigé : était inversé dans v1)
+    """
     cat.send_command(OP_DIM, [0x01 if on else 0x00])
+
+
+def scan_skip_set(cat: CATConnection, channel: int, skip: bool = True) -> None:
+    """
+    Marque un canal à ignorer (ou non) pendant le scanning.
+
+    Args:
+        channel : canal à configurer (1–50)
+        skip    : True = Skip On (Y=00h), False = Skip Off (Y=01h)
+    """
+    if not (1 <= channel <= 50):
+        raise CATError(f"Canal invalide : {channel}")
+    y = 0x00 if skip else 0x01
+    # X = canal (byte 1), Y = skip on/off (byte 2)
+    cat.send_command(OP_SCAN_SKIP, [channel, y])
 
 
 # ------------------------------------------------------------------
@@ -242,48 +343,63 @@ def set_dim(cat: CATConnection, on: bool) -> None:
 
 def read_status(cat: CATConnection) -> dict:
     """
-    Demande une mise à jour de statut complète (Status Update).
+    Demande une mise à jour de statut (Status Update, opcode 10h).
 
-    Retourne jusqu'à 283 octets décrivant l'état interne du FRG-100.
-    Pour l'instant on lit les 5 premiers octets (fréquence + flags de base).
+    Le FRG-100 peut retourner 1, 18, 19 ou 283 octets selon U.
+    On envoie U=00h pour obtenir la réponse courte (1 octet = ACK),
+    ou U=01h pour 18/19 octets incluant la fréquence courante.
 
     Returns:
-        dict avec les champs décodés
+        dict avec freq_hz, freq_mhz, raw
     """
-    response = cat.send_command_read(OP_STATUS, expected_bytes=5)
+    # U=01h → réponse avec fréquence (18 ou 19 octets selon firmware)
+    response = cat.send_command_read(OP_STATUS, args=[0x01], expected_bytes=5)
     if len(response) < 5:
         raise CATError("Réponse Status trop courte")
 
-    # Les 4 premiers octets = fréquence en BCD inversé
     freq_bytes = list(response[:4])
     freq_hz = bcd_to_freq(freq_bytes)
 
     return {
-        "freq_hz"   : freq_hz,
-        "freq_mhz"  : freq_hz / 1_000_000,
-        "raw"       : list(response),
+        "freq_hz"  : freq_hz,
+        "freq_mhz" : freq_hz / 1_000_000,
+        "raw"      : list(response),
     }
 
 
 def read_smeter(cat: CATConnection) -> int:
     """
-    Lit la valeur du S-Mètre (force du signal reçu).
+    Lit la valeur du S-Mètre (opcode F7h).
+
+    Le FRG-100 retourne 4 octets identiques (valeur du mètre)
+    suivis de 0xF7. Ex : [05, 05, 05, 05, F7] → S = 5.
 
     Returns:
-        Valeur brute du S-Mètre (0–18, 19 ou 283 selon le manuel)
+        Valeur du S-Mètre (0–18 typiquement)
+
+    Raises:
+        CATError si pas de réponse ou format inattendu
     """
     response = cat.send_command_read(OP_READ_SMETER, expected_bytes=5)
-    if not response:
+    if len(response) < 5:
         raise CATError("Pas de réponse du S-Mètre")
+    # Vérification : le 5ème octet doit être 0xF7
+    if response[4] != 0xF7:
+        raise CATError(
+            f"Format S-Mètre inattendu : dernier octet = {hex(response[4])}"
+        )
     return response[0]
 
 
 def read_flags(cat: CATConnection) -> dict:
     """
-    Lit les flags d'état du FRG-100 (Read Flags).
+    Lit les 24 bits de flags d'état du FRG-100 (opcode FAh).
+
+    Retourne 5 octets contenant les Status Flags (cf. pages suivantes
+    du manuel pour le détail bit à bit).
 
     Returns:
-        dict avec les flags décodés (5 octets, 24 bits de statut)
+        dict avec raw (liste d'ints) et bytes (liste de strings hex)
     """
     response = cat.send_command_read(OP_READ_FLAGS, expected_bytes=5)
     return {

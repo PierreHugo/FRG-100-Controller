@@ -18,7 +18,7 @@ import logging
 from frg100 import CATConnection, CATError
 from frg100 import (
     set_frequency, set_mode,
-    step_up, step_down,
+    step_up, step_down, step_fine,
     lock, read_smeter,
     memory_recall, vfo_to_memory,
     MODE,
@@ -205,17 +205,28 @@ class FRG100App(tk.Tk):
             command=self._send_frequency,
         ).pack(side="left")
 
-        # Boutons step
+        # Boutons step — 4 boutons : fin et rapide dans chaque sens
         tk.Label(row1, text="   Step :", bg=COLOR_PANEL,
                  fg=COLOR_TEXT, font=FONT_LABEL).pack(side="left")
-        tk.Button(row1, text="▼", font=FONT_BUTTON, width=3,
+        tk.Button(row1, text="◀◀", font=FONT_BUTTON, width=3,
                   bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
-                  cursor="hand2", command=self._step_down,
-                  ).pack(side="left", padx=2)
-        tk.Button(row1, text="▲", font=FONT_BUTTON, width=3,
+                  cursor="hand2", command=lambda: self._step_fast(False),
+                  ).pack(side="left", padx=(2, 0))
+        tk.Button(row1, text="◀", font=FONT_BUTTON, width=3,
                   bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
-                  cursor="hand2", command=self._step_up,
-                  ).pack(side="left", padx=2)
+                  cursor="hand2", command=lambda: self._step_fine("down"),
+                  ).pack(side="left", padx=(0, 4))
+        tk.Button(row1, text="▶", font=FONT_BUTTON, width=3,
+                  bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
+                  cursor="hand2", command=lambda: self._step_fine("up"),
+                  ).pack(side="left", padx=(4, 0))
+        tk.Button(row1, text="▶▶", font=FONT_BUTTON, width=3,
+                  bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
+                  cursor="hand2", command=lambda: self._step_fast(True),
+                  ).pack(side="left", padx=(0, 2))
+        tk.Label(row1, text="◀◀▶▶=100kHz  ◀▶=10Hz",
+                 bg=COLOR_PANEL, fg=COLOR_MUTED, font=FONT_SMALL,
+                 ).pack(side="left", padx=6)
 
         # --- Ligne 2 : mode + verrou ---
         row2 = tk.LabelFrame(outer, text=" Mode & Contrôles ", bg=COLOR_PANEL,
@@ -366,21 +377,28 @@ class FRG100App(tk.Tk):
         except CATError as e:
             self._show_cat_error(e)
 
-    def _step_up(self):
+    def _step_fast(self, up: bool):
+        """Step rapide ±100 kHz (UP/DOWN FAST, S/D en byte 2)."""
         if not self._check_connected():
             return
         try:
-            step_up(self.cat)
-            self._set_status("Step ▲")
+            if up:
+                step_up(self.cat, large=False)   # +100 kHz
+                self._set_status("Step ▶▶ +100 kHz")
+            else:
+                step_down(self.cat, large=False)  # -100 kHz
+                self._set_status("Step ◀◀ -100 kHz")
         except CATError as e:
             self._show_cat_error(e)
 
-    def _step_down(self):
+    def _step_fine(self, direction: str):
+        """Step fin ±10 Hz (Step Oper. Frequency)."""
         if not self._check_connected():
             return
         try:
-            step_down(self.cat)
-            self._set_status("Step ▼")
+            step_fine(self.cat, direction=direction)
+            arrow = "▶" if direction == "up" else "◀"
+            self._set_status(f"Step fin {arrow} 10 Hz")
         except CATError as e:
             self._show_cat_error(e)
 
@@ -433,14 +451,22 @@ class FRG100App(tk.Tk):
         self._polling = False
 
     def _poll_smeter(self):
-        """Lit le S-mètre toutes les 500 ms en arrière-plan."""
+        """
+        Lit le S-mètre toutes les 500 ms en arrière-plan.
+        S'arrête silencieusement si le FRG-100 ne répond pas après 3 tentatives.
+        """
+        failures = 0
+        MAX_FAILURES = 3
         while self._polling and self.connected:
             try:
                 value = read_smeter(self.cat)
-                # Mise à jour de l'UI depuis le thread principal
+                failures = 0
                 self.after(0, self._draw_smeter, min(value, 12))
             except CATError:
-                pass  # silencieux — l'appareil peut ne pas répondre
+                failures += 1
+                if failures >= MAX_FAILURES:
+                    logger.info("S-mètre non disponible — polling désactivé")
+                    return
             time.sleep(0.5)
 
     # ------------------------------------------------------------------
