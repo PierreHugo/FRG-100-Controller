@@ -76,7 +76,7 @@ class FRG100App(tk.Tk):
 
         # Variables tkinter
         self.var_port       = tk.StringVar(value=DEFAULT_PORT)
-        self.var_freq_input = tk.StringVar(value="14.250")
+        self.var_freq_input = tk.StringVar(value="14.25000")
         self.var_mode       = tk.StringVar(value="USB")
         self.var_status     = tk.StringVar(value="Non connecté")
         self.var_freq_disp  = tk.StringVar(value="-- --- ---")
@@ -177,21 +177,25 @@ class FRG100App(tk.Tk):
             )
 
     def _build_controls(self):
-        """Panneau de commandes : fréquence, mode, step, mémoires, verrou."""
+        """Panneau de commandes : fréquence, mode, step, verrou."""
         outer = tk.Frame(self, bg=COLOR_BG, padx=12, pady=12)
         outer.pack(fill="x")
 
-        # --- Ligne 1 : saisie fréquence ---
+        # --- Ligne 1 : saisie fréquence + steps ---
         row1 = tk.LabelFrame(outer, text=" Fréquence ", bg=COLOR_PANEL,
                              fg=COLOR_MUTED, font=FONT_SMALL,
                              bd=1, relief="flat", padx=10, pady=8)
         row1.pack(fill="x", pady=(0, 8))
 
-        tk.Label(row1, text="MHz :", bg=COLOR_PANEL,
+        # Saisie + bouton Aller
+        left = tk.Frame(row1, bg=COLOR_PANEL)
+        left.pack(side="left")
+
+        tk.Label(left, text="MHz :", bg=COLOR_PANEL,
                  fg=COLOR_TEXT, font=FONT_LABEL).pack(side="left")
 
         entry_freq = tk.Entry(
-            row1, textvariable=self.var_freq_input, width=10,
+            left, textvariable=self.var_freq_input, width=8,
             bg=COLOR_DISPLAY, fg=COLOR_FREQ,
             insertbackground=COLOR_FREQ,
             relief="flat", font=("Courier New", 14),
@@ -200,40 +204,48 @@ class FRG100App(tk.Tk):
         entry_freq.bind("<Return>", lambda _: self._send_frequency())
 
         tk.Button(
-            row1, text="Aller →", font=FONT_BUTTON,
+            left, text="Aller →", font=FONT_BUTTON,
             bg=COLOR_ACCENT, fg="white", relief="flat",
             padx=10, pady=2, cursor="hand2",
             command=self._send_frequency,
         ).pack(side="left")
 
-        # Boutons step — 4 boutons : fin et rapide dans chaque sens
-        tk.Label(row1, text="   Step :", bg=COLOR_PANEL,
-                 fg=COLOR_TEXT, font=FONT_LABEL).pack(side="left")
-        tk.Button(row1, text="◀◀", font=FONT_BUTTON, width=3,
+        # Séparateur
+        tk.Label(row1, text="", bg=COLOR_PANEL, width=3).pack(side="left")
+
+        # Steps — boutons avec labels en dessous dans un Frame vertical
+        step_outer = tk.Frame(row1, bg=COLOR_PANEL)
+        step_outer.pack(side="left")
+
+        step_btns = tk.Frame(step_outer, bg=COLOR_PANEL)
+        step_btns.pack()
+
+        tk.Button(step_btns, text="◀◀", font=FONT_BUTTON, width=3,
                   bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
                   cursor="hand2", command=lambda: self._step_fast(False),
-                  ).pack(side="left", padx=(2, 0))
-        tk.Button(row1, text="◀", font=FONT_BUTTON, width=3,
+                  ).pack(side="left", padx=1)
+        tk.Button(step_btns, text="◀", font=FONT_BUTTON, width=3,
                   bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
                   cursor="hand2", command=lambda: self._step_fine("down"),
-                  ).pack(side="left", padx=(0, 4))
-        tk.Button(row1, text="▶", font=FONT_BUTTON, width=3,
+                  ).pack(side="left", padx=1)
+        tk.Button(step_btns, text="▶", font=FONT_BUTTON, width=3,
                   bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
                   cursor="hand2", command=lambda: self._step_fine("up"),
-                  ).pack(side="left", padx=(4, 0))
-        tk.Button(row1, text="▶▶", font=FONT_BUTTON, width=3,
+                  ).pack(side="left", padx=1)
+        tk.Button(step_btns, text="▶▶", font=FONT_BUTTON, width=3,
                   bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
                   cursor="hand2", command=lambda: self._step_fast(True),
-                  ).pack(side="left", padx=(0, 2))
-        tk.Label(row1, text="◀◀▶▶=100kHz  ◀▶=10Hz",
+                  ).pack(side="left", padx=1)
+
+        tk.Label(step_outer, text="100kHz  10Hz  10Hz  100kHz",
                  bg=COLOR_PANEL, fg=COLOR_MUTED, font=FONT_SMALL,
-                 ).pack(side="left", padx=6)
+                 ).pack()
 
         # --- Ligne 2 : mode + verrou ---
         row2 = tk.LabelFrame(outer, text=" Mode & Contrôles ", bg=COLOR_PANEL,
                              fg=COLOR_MUTED, font=FONT_SMALL,
                              bd=1, relief="flat", padx=10, pady=8)
-        row2.pack(fill="x", pady=(0, 8))
+        row2.pack(fill="x")
 
         tk.Label(row2, text="Mode :", bg=COLOR_PANEL,
                  fg=COLOR_TEXT, font=FONT_LABEL).pack(side="left")
@@ -263,38 +275,6 @@ class FRG100App(tk.Tk):
             command=self._toggle_lock,
         )
         self.btn_lock.pack(side="left", padx=8)
-
-        # --- Ligne 3 : mémoires ---
-        row3 = tk.LabelFrame(outer, text=" Mémoires (1–10) ", bg=COLOR_PANEL,
-                             fg=COLOR_MUTED, font=FONT_SMALL,
-                             bd=1, relief="flat", padx=10, pady=8)
-        row3.pack(fill="x")
-
-        for ch in range(1, 11):
-            tk.Button(
-                row3, text=str(ch), font=FONT_SMALL, width=3,
-                bg=COLOR_BORDER, fg=COLOR_TEXT, relief="flat",
-                cursor="hand2",
-                command=lambda c=ch: self._recall_memory(c),
-            ).pack(side="left", padx=2)
-
-        tk.Label(row3, text="   ", bg=COLOR_PANEL).pack(side="left")
-        tk.Label(row3, text="Stocker VFO →", bg=COLOR_PANEL,
-                 fg=COLOR_MUTED, font=FONT_SMALL).pack(side="left")
-
-        self.var_mem_target = tk.StringVar(value="1")
-        tk.Spinbox(
-            row3, from_=1, to=50, textvariable=self.var_mem_target,
-            width=4, bg=COLOR_DISPLAY, fg=COLOR_TEXT,
-            relief="flat", font=FONT_SMALL,
-        ).pack(side="left", padx=4)
-
-        tk.Button(
-            row3, text="Sauver", font=FONT_SMALL,
-            bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
-            padx=6, cursor="hand2",
-            command=self._store_memory,
-        ).pack(side="left")
 
     def _build_statusbar(self):
         """Barre de statut en bas."""
@@ -501,9 +481,10 @@ class FRG100App(tk.Tk):
         return True
 
     def _update_freq_display(self, freq_hz: int) -> None:
-        """Met à jour le LCD vert et le champ de saisie avec la fréquence donnée."""
+        """Met à jour le LCD vert et le champ de saisie."""
         self.var_freq_disp.set(self._format_freq(freq_hz))
-        self.var_freq_input.set(f"{freq_hz / 1_000_000:.3f}")
+        # Champ de saisie en MHz avec 5 décimales (ex: 14.25000)
+        self.var_freq_input.set(f"{freq_hz / 1_000_000:.5f}")
 
     def _show_cat_error(self, e: Exception):
         messagebox.showerror("Erreur CAT", str(e))
@@ -514,8 +495,8 @@ class FRG100App(tk.Tk):
 
     @staticmethod
     def _format_freq(freq_hz: int) -> str:
-        """Formate une fréquence Hz en chaîne afficheur : '14 250 000'."""
-        mhz  = freq_hz // 1_000_000
-        khz  = (freq_hz % 1_000_000) // 1_000
-        hz   = freq_hz % 1_000
-        return f"{mhz:2d} {khz:03d} {hz:03d}"
+        """Formate en '14.250.00' — comme l'afficheur du FRG-100 (résolution 10 Hz)."""
+        mhz    = freq_hz // 1_000_000
+        khz    = (freq_hz % 1_000_000) // 1_000
+        dix_hz = (freq_hz % 1_000) // 10
+        return f"{mhz:2d}.{khz:03d}.{dix_hz:02d}"
