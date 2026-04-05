@@ -95,42 +95,39 @@ VFO_TO_MEM_RECALL = 0x02   # rappeler le canal
 
 def freq_to_bcd(freq_hz: int) -> list[int]:
     """
-    Encode une fréquence en Hz en BCD packed decimal.
+    Encode une fréquence en Hz en BCD packed decimal (vraie valeur hex).
 
-    Le FRG-100 exprime les fréquences en dizaines de Hz sur 8 chiffres
-    décimaux, packés en 4 octets BCD.
+    BCD packed signifie que chaque octet contient 2 chiffres décimaux
+    encodés en hexadécimal : "42" → 0x42 (66 decimal), PAS int("42")=42=0x2A.
 
     Exemple confirmé par l'exemple GW Basic du manuel (p.39) :
         14.25000 MHz → bloc envoyé : 00h 50h 42h 01h 0Ah (opcode)
-        Ordre sur le fil : [Arg4=00, Arg3=50, Arg2=42, Arg1=01, Opcode]
-        Donc arg1=01, arg2=42, arg3=50, arg4=00
 
         14 250 000 Hz ÷ 10 = 1 425 000
-        → 8 chiffres : "01425000"
-        → 4 octets BCD : [01, 42, 50, 00]
-        → on retourne [01, 42, 50, 00] = [arg1, arg2, arg3, arg4]
-        → _build_block inverse → [00, 50, 42, 01] sur le fil ✓
+        → 8 chiffres décimaux : "01425000"
+        → BCD : "01"→0x01, "42"→0x42, "50"→0x50, "00"→0x00
+        → args [arg1..arg4] = [0x01, 0x42, 0x50, 0x00]
+        → _build_block inverse → [0x00, 0x50, 0x42, 0x01] sur le fil ✓
 
     Args:
-        freq_hz : fréquence en Hz (ex: 14_250_000 pour 14.250 MHz)
+        freq_hz : fréquence en Hz
 
     Returns:
-        Liste [arg1, arg2, arg3, arg4] dans l'ordre naturel
-        (_build_block se charge de l'inversion avant envoi)
+        Liste [arg1, arg2, arg3, arg4] en valeurs hex BCD
     """
     freq_tens = freq_hz // 10
     freq_str  = f"{freq_tens:08d}"
-    # [01, 42, 50, 00] pour 14.250 MHz
-    return [int(freq_str[i:i+2]) for i in range(0, 8, 2)]
+    # int("42", 16) = 0x42 = 66 — c'est le BCD packed correct
+    return [int(freq_str[i:i+2], 16) for i in range(0, 8, 2)]
 
 
 def bcd_to_freq(bcd_bytes: list[int]) -> int:
     """
-    Décode 4 octets BCD [arg1, arg2, arg3, arg4] en fréquence Hz.
+    Décode 4 octets BCD [arg1..arg4] en fréquence Hz.
     Inverse de freq_to_bcd.
-    Ex : [01, 42, 50, 00] → "01425000" → 1 425 000 × 10 = 14 250 000 Hz
+    Ex : [0x01, 0x42, 0x50, 0x00] → "01425000" → 1 425 000 × 10 = 14 250 000 Hz
     """
-    freq_str  = "".join(f"{b:02d}" for b in bcd_bytes)
+    freq_str  = "".join(f"{b:02x}" for b in bcd_bytes)
     freq_tens = int(freq_str)
     return freq_tens * 10
 
