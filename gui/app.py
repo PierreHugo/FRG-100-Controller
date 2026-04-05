@@ -19,7 +19,7 @@ from frg100 import CATConnection, CATError
 from frg100 import (
     set_frequency, set_mode,
     step_up, step_down, step_fine,
-    lock, read_smeter,
+    lock, read_smeter, set_pacing,
     memory_recall, vfo_to_memory,
     MODE,
 )
@@ -302,11 +302,20 @@ class FRG100App(tk.Tk):
             self.cat.connect()
             self.connected = True
 
+            # Pacing : on demande 10ms entre chaque octet de réponse
+            # Sans ça, le FRG-100 répond immédiatement (délai=0)
+            # et les octets arrivent avant qu'on soit prêt à lire
+            set_pacing(self.cat, 10)
+            time.sleep(0.1)
+
             self.btn_connect.config(text="Déconnecter", bg=COLOR_DANGER)
             self.lbl_conn_status.config(
                 text=f"●  Connecté ({port})", fg=COLOR_SUCCESS
             )
-            self._set_status(f"Connecté sur {port} — 4800 baud, 8N2")
+            self._set_status(f"Connecté sur {port} — 4800 baud, 8N2 — pacing 10ms")
+
+            # Lecture initiale de la fréquence et du mode réels
+            self._read_status_from_radio()
             self._start_smeter_polling()
 
         except CATError as e:
@@ -468,23 +477,30 @@ class FRG100App(tk.Tk):
 
     def _poll_smeter(self):
         """
-        Lit le S-mètre toutes les 500 ms en arrière-plan.
-        S'arrête silencieusement si le FRG-100 ne répond pas après 3 tentatives.
+        Lit le S-mètre toutes les 500ms et rafraîchit le status toutes les 5s.
+        Le pacing (10ms) configuré à la connexion permet de recevoir les réponses.
+        S'arrête silencieusement si le S-mètre ne répond pas après 3 tentatives.
         """
         failures = 0
         MAX_FAILURES = 3
+        ticks = 0
+
         while self._polling and self.connected:
+            # Rafraîchissement fréquence/mode toutes les 5s (10 ticks de 500ms)
+            ticks += 1
+            if ticks % 10 == 0:
+                self.after(0, self._read_status_from_radio)
+
             try:
-                # Timeout étendu à 3s pour le S-mètre — la réponse peut être lente
                 response = self.cat.send_command_read(
                     0xF7, expected_bytes=5, read_timeout=3.0
                 )
-                if len(response) == 5:
+                if len(response) == 5 and response[4] == 0xF7:
                     failures = 0
                     value = response[0]
                     self.after(0, self._draw_smeter, min(value, 12))
                 else:
-                    raise CATError("réponse incomplète")
+                    raise CATError("réponse invalide")
             except CATError:
                 failures += 1
                 if failures >= MAX_FAILURES:
@@ -502,6 +518,52 @@ class FRG100App(tk.Tk):
                                 "Connectez-vous d'abord au FRG-100.")
             return False
         return True
+
+    def _read_status_from_radio(self) -> None:
+        """
+        Lit la fréquence et le mode réels depuis le FRG-100.
+
+        Envoie Status Update avec U=2 → 19 octets en retour.
+        Structure du 19-byte Operating Data Record (p.38 manuel) :
+          Byte 0    : memory flag (padding)
+          Bytes 1   : padding
+          Bytes 2-4 : fréquence BCD (3 octets, MSB en premier, dizaines de Hz)
+          Bytes 5-6 : padding
+          Byte 7    : mode (0=LSB,1=USB,2=CW,3=AM,4=FM)
+          Byte 8    : VFO/MEM flags
+          Bytes 9-18: padding
+        """
+        try:
+            response = self.cat.send_command_read(
+                0x10, args=[0x02], expected_bytes=19, read_timeout=3.0
+            )
+            if len(response) < 9:
+                logger.warning(f"Status Update trop court : {len(response)} octets")
+                return
+
+            # Fréquence : 3 octets BCD à l'offset 2-4, MSB en premier
+            # Ex : [0x14, 0x25, 0x00] → "142500" → × 10 = 14.250.00 MHz
+            b2, b3, b4 = response[2], response[3], response[4]
+            freq_str = f"{b2:02x}{b3:02x}{b4:02x}"  # BCD hex → string décimale
+            freq_tens = int(freq_str)
+            freq_hz = freq_tens * 10
+
+            # Mode à l'offset 7
+            mode_byte = response[7]
+            mode_names = {0: "LSB", 1: "USB", 2: "CW", 3: "AM", 4: "FM"}
+            mode_str = mode_names.get(mode_byte, f"?({mode_byte})")
+
+            if 50_000 <= freq_hz <= 30_000_000:
+                self.current_freq_hz = freq_hz
+                self._update_freq_display(freq_hz)
+                self.lbl_mode_disp.config(text=f"MODE : {mode_str}")
+                self.var_mode.set(mode_str if mode_str in MODE else "USB")
+                logger.info(f"Status lu : {freq_hz/1e6:.3f} MHz, mode={mode_str}")
+            else:
+                logger.warning(f"Fréquence hors plage dans Status Update : {freq_hz}")
+
+        except CATError as e:
+            logger.warning(f"Status Update échoué : {e}")
 
     def _update_freq_display(self, freq_hz: int) -> None:
         """Met à jour le LCD vert et le champ de saisie."""
