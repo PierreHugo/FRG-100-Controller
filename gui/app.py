@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 # Constantes visuelles
 # ------------------------------------------------------------------
 
-FONT_DISPLAY   = ("Courier New", 36, "bold")   # afficheur fréquence
-FONT_LABEL     = ("Segoe UI", 10)
-FONT_LABEL_B   = ("Segoe UI", 10, "bold")
-FONT_BUTTON    = ("Segoe UI", 10)
-FONT_SMALL     = ("Segoe UI", 9)
+FONT_DISPLAY   = ("Courier New", 56, "bold")   # afficheur fréquence — grand
+FONT_LABEL     = ("Segoe UI", 13)
+FONT_LABEL_B   = ("Segoe UI", 13, "bold")
+FONT_BUTTON    = ("Segoe UI", 13)
+FONT_SMALL     = ("Segoe UI", 11)
 
 COLOR_BG       = "#1c1c1e"   # fond général (sombre, style radio)
 COLOR_PANEL    = "#2c2c2e"   # fond des panneaux
@@ -64,8 +64,9 @@ class FRG100App(tk.Tk):
         super().__init__()
 
         self.title("FRG-100 Controller")
-        self.resizable(False, False)
         self.configure(bg=COLOR_BG)
+        # Plein écran au démarrage
+        self.state("zoomed")   # Windows : fenêtre maximisée
 
         # État de l'application
         self.cat: CATConnection | None = None
@@ -79,7 +80,7 @@ class FRG100App(tk.Tk):
         self.var_freq_input = tk.StringVar(value="14.25000")
         self.var_mode       = tk.StringVar(value="USB")
         self.var_status     = tk.StringVar(value="Non connecté")
-        self.var_freq_disp  = tk.StringVar(value="-- --- ---")
+        self.var_freq_disp  = tk.StringVar(value="--.--.--")
         self.var_smeter     = tk.IntVar(value=0)
 
         self._build_ui()
@@ -140,18 +141,18 @@ class FRG100App(tk.Tk):
         )
         self.lbl_freq.pack(side="left")
 
-        tk.Label(freq_row, text=" MHz", font=("Courier New", 18),
-                 bg=COLOR_DISPLAY, fg=COLOR_UNIT).pack(side="left", pady=(14, 0))
+        tk.Label(freq_row, text=" MHz", font=("Courier New", 28),
+                 bg=COLOR_DISPLAY, fg=COLOR_UNIT).pack(side="left", pady=(22, 0))
 
         # S-mètre (12 segments)
-        smeter_frame = tk.Frame(frame, bg=COLOR_DISPLAY, pady=8)
+        smeter_frame = tk.Frame(frame, bg=COLOR_DISPLAY, pady=10)
         smeter_frame.pack()
 
         tk.Label(smeter_frame, text="S-Mètre", font=FONT_SMALL,
                  bg=COLOR_DISPLAY, fg=COLOR_MUTED).pack(anchor="w")
 
         self.smeter_canvas = tk.Canvas(
-            smeter_frame, width=300, height=18,
+            smeter_frame, width=480, height=24,
             bg=COLOR_DISPLAY, highlightthickness=0,
         )
         self.smeter_canvas.pack()
@@ -167,7 +168,7 @@ class FRG100App(tk.Tk):
     def _draw_smeter(self, level: int):
         """Redessine les segments du S-mètre (0–12)."""
         self.smeter_canvas.delete("all")
-        seg_w, seg_h, gap = 20, 14, 3
+        seg_w, seg_h, gap = 34, 20, 4
         for i in range(12):
             x1 = i * (seg_w + gap)
             color = SMETER_COLORS[i] if i < level else COLOR_BORDER

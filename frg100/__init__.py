@@ -21,6 +21,8 @@ from .commands import (
     read_status,
     read_smeter,
     read_flags,
+    freq_to_bcd,
+    bcd_to_freq,
     MODE,
     VFO_TO_MEM_SET,
     VFO_TO_MEM_CLEAR,
