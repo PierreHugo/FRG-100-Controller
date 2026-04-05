@@ -72,6 +72,7 @@ class FRG100App(tk.Tk):
         self.connected = False
         self.smeter_job = None          # référence au polling S-mètre
         self.locked = False
+        self.current_freq_hz = 14_250_000  # fréquence courante trackée localement
 
         # Variables tkinter
         self.var_port       = tk.StringVar(value=DEFAULT_PORT)
@@ -239,7 +240,8 @@ class FRG100App(tk.Tk):
 
         mode_menu = ttk.Combobox(
             row2, textvariable=self.var_mode,
-            values=list(MODE.keys()), state="readonly",
+            values=["LSB", "USB", "CW", "CWW", "AM", "AMN", "FM", "WFM"],
+            state="readonly",
             width=6, font=FONT_LABEL,
         )
         mode_menu.pack(side="left", padx=8)
@@ -358,7 +360,8 @@ class FRG100App(tk.Tk):
             freq_mhz = float(self.var_freq_input.get().replace(",", "."))
             freq_hz  = int(freq_mhz * 1_000_000)
             set_frequency(self.cat, freq_hz)
-            self.var_freq_disp.set(self._format_freq(freq_hz))
+            self.current_freq_hz = freq_hz
+            self._update_freq_display(freq_hz)
             self._set_status(f"Fréquence réglée : {freq_mhz:.3f} MHz")
         except ValueError:
             messagebox.showwarning("Fréquence invalide",
@@ -378,16 +381,20 @@ class FRG100App(tk.Tk):
             self._show_cat_error(e)
 
     def _step_fast(self, up: bool):
-        """Step rapide ±100 kHz (UP/DOWN FAST, S/D en byte 2)."""
+        """Step rapide ±100 kHz (UP/DOWN FAST)."""
         if not self._check_connected():
             return
         try:
+            delta = 100_000
             if up:
-                step_up(self.cat, large=False)   # +100 kHz
+                step_up(self.cat, large=False)
+                self.current_freq_hz = min(self.current_freq_hz + delta, FREQ_MAX_HZ)
                 self._set_status("Step ▶▶ +100 kHz")
             else:
-                step_down(self.cat, large=False)  # -100 kHz
+                step_down(self.cat, large=False)
+                self.current_freq_hz = max(self.current_freq_hz - delta, FREQ_MIN_HZ)
                 self._set_status("Step ◀◀ -100 kHz")
+            self._update_freq_display(self.current_freq_hz)
         except CATError as e:
             self._show_cat_error(e)
 
@@ -397,8 +404,14 @@ class FRG100App(tk.Tk):
             return
         try:
             step_fine(self.cat, direction=direction)
-            arrow = "▶" if direction == "up" else "◀"
-            self._set_status(f"Step fin {arrow} 10 Hz")
+            delta = 10
+            if direction == "up":
+                self.current_freq_hz = min(self.current_freq_hz + delta, FREQ_MAX_HZ)
+                self._set_status("Step ▶ +10 Hz")
+            else:
+                self.current_freq_hz = max(self.current_freq_hz - delta, FREQ_MIN_HZ)
+                self._set_status("Step ◀ -10 Hz")
+            self._update_freq_display(self.current_freq_hz)
         except CATError as e:
             self._show_cat_error(e)
 
@@ -486,6 +499,11 @@ class FRG100App(tk.Tk):
                                 "Connectez-vous d'abord au FRG-100.")
             return False
         return True
+
+    def _update_freq_display(self, freq_hz: int) -> None:
+        """Met à jour le LCD vert et le champ de saisie avec la fréquence donnée."""
+        self.var_freq_disp.set(self._format_freq(freq_hz))
+        self.var_freq_input.set(f"{freq_hz / 1_000_000:.3f}")
 
     def _show_cat_error(self, e: Exception):
         messagebox.showerror("Erreur CAT", str(e))

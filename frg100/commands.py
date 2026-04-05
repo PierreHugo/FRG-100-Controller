@@ -67,16 +67,17 @@ OP_DIM          = 0xF8
 OP_READ_FLAGS   = 0xFA
 
 # Modes de réception — valeur M pour la commande MODE (opcode 0Ch)
-# Valeurs confirmées par le manuel : LSB=0, USB=1, CW Wide=3,
-# CW Narrow=3, AW Wide=4, AM Narrow=5, FM=6 or 7
+# Valeurs exactes du manuel : LSB=0, USB=1, CW=2, CW Wide=3,
+# AW Wide=4, AM Narrow=5, FM=6 or 7
 MODE = {
     "LSB"  : 0,
     "USB"  : 1,
-    "CW"   : 2,   # CW (standard)
-    "AM"   : 3,   # AM Wide
+    "CW"   : 2,
+    "CWW"  : 3,   # CW Wide
+    "AM"   : 4,   # AM Wide  (était 3 = CW Wide, erreur corrigée)
     "AMN"  : 5,   # AM Narrow
-    "FM"   : 6,   # FM
-    "WFM"  : 7,   # FM (wide)
+    "FM"   : 6,
+    "WFM"  : 7,   # FM Wide
 }
 
 # Canaux mémoire spéciaux (en plus des canaux 1–50)
