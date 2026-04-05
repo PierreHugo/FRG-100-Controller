@@ -77,7 +77,7 @@ class FRG100App(tk.Tk):
 
         # Variables tkinter
         self.var_port       = tk.StringVar(value=DEFAULT_PORT)
-        self.var_freq_input = tk.StringVar(value="14.25000")
+        self.var_freq_input = tk.StringVar(value="14.250")
         self.var_mode       = tk.StringVar(value="USB")
         self.var_status     = tk.StringVar(value="Non connecté")
         self.var_freq_disp  = tk.StringVar(value="--.--.--")
@@ -338,15 +338,37 @@ class FRG100App(tk.Tk):
         if not self._check_connected():
             return
         try:
-            freq_mhz = float(self.var_freq_input.get().replace(",", "."))
-            freq_hz  = int(freq_mhz * 1_000_000)
+            raw = self.var_freq_input.get().strip().replace(",", ".")
+
+            # Accepte deux formats :
+            #   "7.100"      → MHz avec décimales
+            #   "7.100.00"   → MHz.kHz.dizaines_Hz (format afficheur)
+            parts = raw.split(".")
+            if len(parts) == 3:
+                # Format 7.100.00 → on reconstruit en MHz flottant
+                mhz_str = f"{parts[0]}.{parts[1]}{parts[2]}"
+                freq_hz = int(float(mhz_str) * 1_000)  # en kHz * 1000 → Hz
+                # En fait plus simple : MHz.kHz → freq_hz directement
+                freq_hz = int(parts[0]) * 1_000_000 \
+                        + int(parts[1]) * 1_000 \
+                        + int(parts[2]) * 10
+            elif len(parts) <= 2:
+                # Format 7.100 → MHz flottant classique
+                freq_hz = int(float(raw) * 1_000_000)
+            else:
+                raise ValueError("format inattendu")
+
             set_frequency(self.cat, freq_hz)
             self.current_freq_hz = freq_hz
             self._update_freq_display(freq_hz)
-            self._set_status(f"Fréquence réglée : {freq_mhz:.3f} MHz")
-        except ValueError:
-            messagebox.showwarning("Fréquence invalide",
-                                   "Entrez une fréquence en MHz (ex: 14.250)")
+            mhz = freq_hz / 1_000_000
+            self._set_status(f"Fréquence réglée : {mhz:.3f} MHz")
+
+        except (ValueError, IndexError):
+            messagebox.showwarning(
+                "Fréquence invalide",
+                "Formats acceptés :\n  7.100  ou  7.100.00\n(en MHz)"
+            )
         except CATError as e:
             self._show_cat_error(e)
 
@@ -484,8 +506,10 @@ class FRG100App(tk.Tk):
     def _update_freq_display(self, freq_hz: int) -> None:
         """Met à jour le LCD vert et le champ de saisie."""
         self.var_freq_disp.set(self._format_freq(freq_hz))
-        # Champ de saisie en MHz avec 5 décimales (ex: 14.25000)
-        self.var_freq_input.set(f"{freq_hz / 1_000_000:.5f}")
+        # Champ de saisie : format MHz simple à 3 décimales (ex: 7.100)
+        # On évite les zéros superflus : 7.100 pas 7.10000
+        mhz = freq_hz / 1_000_000
+        self.var_freq_input.set(f"{mhz:.3f}")
 
     def _show_cat_error(self, e: Exception):
         messagebox.showerror("Erreur CAT", str(e))
